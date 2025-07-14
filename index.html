@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D粒子星球模拟</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: sans-serif;
+        }
+
+        body {
+            background: #2c3e50;
+        }
+
+        canvas {
+            margin: 0 auto;
+            display: block;
+        }
+
+        .center-link {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+            text-decoration: none;
+            color: #ecf0f1;
+            font-family: 'Exo 2', sans-serif;
+            font-size: 24px;
+            letter-spacing: 3px;
+            opacity: 0.8;
+            transition: all 0.3s ease;
+        }
+
+        .center-link:hover {
+            opacity: 1;
+            text-shadow: 0 0 15px rgba(236, 240, 241, 0.8);
+            transform: translate(-50%, -50%) scale(1.05);
+        }
+    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <a href="https://xtawa.top" target="_blank" class="center-link">Visit Blog</a>
+    <canvas id="c"></canvas>
+
+    <script>
+        // 3D粒子星球模拟系统
+        // 包含地球表面、水体和云层的粒子效果
+
+        // 系统配置参数
+        var settings = {
+            POINTS: 200,
+            RADIUS: 200,
+            ROTATION: 0.006,
+            MAX_SPEED: 2,
+            FOV: 400,
+            Z_MAX: 388,
+            MAX_SPEED: 0.015,
+            MAX_FORCE: 0.10,
+            MAX_SIZE: 5,
+            DESIRED_SEPARATION: 0.5,
+            NEIGHBOR_RADIUS: 50,
+            SEPARATION_WEIGHT: 2,
+            ALIGNMENT_WEIGHT: 1,
+            COHESION_WEIGHT: 1
+        };
+
+        // 粒子类型定义
+        var PointStyle = {
+            earth: 0,
+            water: 1,
+            cloud: 2
+        }
+
+        // 星球半径与缩放比例
+        var Radii = [140, 120, 170];
+        var Scales = [15, 20, 6];
+        var colors = ['#27ae60', '#2980b9', '#ecf0f1']; // 绿色(陆地)、蓝色(水体)、白色(云层)
+
+        // 场景类 - 管理画布与粒子系统
+        Scene = function(canvas_id) {
+            this.init(canvas_id);
+        };
+
+        Scene.prototype.init = function(canvas_id) {
+            this.current_time = new Date().getTime();
+            this.dt = 0;
+            this.canvas = document.getElementById(canvas_id);
+
+            // 响应式画布设置
+            this.canvas.width = window.innerWidth;
+            this.canvas.height = window.innerHeight;
+
+            this.width = this.canvas.width;
+            this.height = this.canvas.height;
+            this.ctx = this.canvas.getContext('2d');
+
+            // 初始化背景
+            this.ctx.clearRect(0, 0, this.width, this.height);
+            this.ctx.fillStyle = 'rgb(44, 62, 80)';
+            this.ctx.fillRect(0, 0, this.width, this.height);
+
+            // 初始化粒子系统
+            this.points = new Array();
+            this.clouds = new Array();
+
+            // 生成陆地与水体粒子
+            for(var i = 0; i < 1800; i++) {
+                var type = i > 1600 ? 0 : 1; // 大部分为水体，少量为陆地
+                var theta = Math.random()*2*Math.PI;
+                var phi = Math.acos(Math.random()*2-1);
+                var x0 = Radii[type]*Math.sin(phi)*Math.cos(theta);
+                var y0 = Radii[type]*Math.sin(phi)*Math.sin(theta);
+                var z0 = Radii[type]*Math.cos(phi);
+                var vel = new Vector();
+
+                var point = new Point(
+                    new Vector(x0, y0, z0),
+                    vel,
+                    theta,
+                    phi,
+                    this.ctx
+                );
+
+                point.type = type;
+                this.points.push(point);
+            }
+
+            // 生成云层粒子
+            for(var i = 0; i < 200; i++) {
+                var type = 2;
+                var theta = Math.random()*2*Math.PI;
+                var phi = Math.acos(Math.random()*2-1);
+                var x0 = Radii[type]*Math.sin(phi)*Math.cos(theta);
+                var y0 = Radii[type]*Math.sin(phi)*Math.sin(theta);
+                var z0 = Radii[type]*Math.cos(phi);
+                var sign = Math.random() > 0.5 ? 1 : -1;
+                var vel = new Vector(sign*Math.random()/200, sign*Math.random()/200, 0);
+
+                var point = new Point(
+                    new Vector(x0, y0, z0), 
+                    vel,
+                    theta,
+                    phi,
+                    this.ctx
+                );
+
+                point.type = type;
+                this.clouds.push(point);
+            }
+        };
+
+        Scene.prototype.enable = function() {
+            var that = this;
+
+            // 兼容不同浏览器的动画帧请求
+            window.requestAnimFrame = (function(){
+                return  window.requestAnimationFrame       || 
+                        window.webkitRequestAnimationFrame || 
+                        window.mozRequestAnimationFrame    || 
+                        window.oRequestAnimationFrame      || 
+                        window.msRequestAnimationFrame     ||
+                        function(callback){ window.setTimeout(callback, 1000 / 60); }
+            })();
+
+            this.animate(new Date().getTime());
+
+            // 窗口大小变化监听
+            var endResize;
+            window.onresize = function(e) {
+                clearTimeout(endResize);
+                endResize = setTimeout(function() {
+                    that.canvasResize();
+                }, 100);
+            };
+
+            return this;
+        };
+
+        Scene.prototype.animate = function(time) {
+            var that = this;
+            this.animationFrame = requestAnimFrame(function() {
+                that.animate(new Date().getTime());
+            });
+            this.update(time);
+        };
+
+        Scene.prototype.disable = function() {
+            window.cancelAnimationFrame(this.animationFrame);
+            return this;
+        };
+
+        Scene.prototype.canvasResize = function() {
+            this.canvas.width = window.innerWidth;
+            this.canvas.height = window.innerHeight;
+            this.width = this.canvas.width;
+            this.height = this.canvas.height;
+        };
+
+        Scene.prototype.update = function(time) {
+            this.dt = time - this.current_time;
+            this.current_time = time;
+
+            // 绘制背景
+            this.draw();
+
+            // 更新陆地与水体粒子
+            for (var i in this.points) {
+                this.points[i].step();
+            }
+            this.points.sort(zSort);
+            for (var i in this.points) {
+                this.points[i].draw();
+            }
+
+            // 更新云层粒子
+            for (var i in this.clouds) {
+                this.clouds[i].step(this.clouds);
+            }
+            this.clouds.sort(zSort);
+            for (var i in this.clouds) {
+                this.clouds[i].draw();
+            }
+        };
+
+        Scene.prototype.draw = function() {
+            // 半透明背景层，实现渐变效果
+            this.ctx.fillStyle = 'rgba(44, 62, 80, 0.1)';
+            this.ctx.fillRect(0, 0, this.width, this.height); 
+        };
+
+        // 粒子类 - 定义单个粒子的行为与属性
+        Point = function(location, velocity, theta, phi, ctx) {
+            this.init(location, velocity, theta, phi, ctx);
+        };
+
+        Point.prototype.init = function(location, velocity, theta, phi, ctx) {
+            this.pos = location.copy();
+            this.vel = velocity.copy();
+            this.theta = theta;
+            this.phi = phi;
+            this.ctx = ctx;
+        };
+
+        // 粒子运动更新
+        Point.prototype.step = function(neighbors) {
+            if(this.type == PointStyle.cloud) {
+                // 云层粒子特殊处理：包含群集行为
+                var z = this.pos.z;
+                var acceleration = this.flock(neighbors);
+                this.vel.add(acceleration).limit(settings.MAX_SPEED);
+                this.pos.add(this.vel);
+                this.pos.z = z;
+                this.rotateX(this.vel.x);
+                this.rotateY(this.vel.y);
+                this.rotateY(settings.ROTATION/2);
+            } else {
+                // 陆地与水体粒子：仅绕Y轴旋转
+                this.rotateY(settings.ROTATION);
+            }  
+        };
+
+        // 3D旋转矩阵实现
+        Point.prototype.rotateY = function(angle) {
+            var x = this.pos.x; 
+            var z = this.pos.z; 
+            var cosRY = Math.cos(angle);
+            var sinRY = Math.sin(angle);
+            this.pos.x = (x * cosRY) + (z * sinRY);
+            this.pos.z = (x * -sinRY) + (z * cosRY);
+        };
+
+        Point.prototype.rotateX = function(angle) {
+            var y = this.pos.y; 
+            var z = this.pos.z; 
+            var cosRY = Math.cos(angle);
+            var sinRY = Math.sin(angle);
+            this.pos.y = (y * cosRY) + (z * sinRY);
+            this.pos.z = (y * -sinRY) + (z * cosRY);
+        };
+
+        Point.prototype.rotateZ = function(angle) {
+            var x = this.pos.x; 
+            var y = this.pos.y; 
+            var cosRY = Math.cos(angle);
+            var sinRY = Math.sin(angle);
+            this.pos.x = (x * cosRY) + (y * sinRY);
+            this.pos.y = (x * -sinRY) + (y * cosRY);
+        }
+
+        // 群集行为算法核心
+        Point.prototype.flock = function(neighbors) {
+            var separation = this.separate(neighbors).multiply(settings.SEPARATION_WEIGHT);
+            var alignment = this.align(neighbors).multiply(settings.ALIGNMENT_WEIGHT);
+            var cohesion = this.cohere(neighbors).multiply(settings.COHESION_WEIGHT);
+            return separation.add(alignment).add(cohesion);
+        };
+
+        Point.prototype.cohere = function(neighbors) {
+            var sum = new Vector(0, 0);
+            var count = 0;
+            for(var boid in neighbors) {
+                var d = this.pos.distance(neighbors[boid].pos);
+                if(d > 0 && d < settings.NEIGHBOR_RADIUS) {
+                    if(Math.abs(this.pos.z - neighbors[boid].pos.z) < 20) {
+                        sum.add(neighbors[boid].pos);
+                        count++;
+                    }
+                }
+            }
+            if(count > 0) return this.steer_to(sum.divide(count));
+            else return sum;
+        };
+
+        Point.prototype.steer_to = function(target) {
+            var desired = Vector.subtract(target, this.pos);
+            var d = desired.magnitude();
+            var steer;
+            if(d > 0) {
+                desired.normalize();
+                if(d < 100) desired.multiply(settings.MAX_SPEED*(d/100));
+                else desired.multiply(settings.MAX_SPEED);
+                steer = desired.subtract(this.vel);
+                steer.limit(settings.MAX_FORCE);
+            } else {
+                steer = new Vector(0, 0);
+            }
+            return steer;
+        };
+
+        Point.prototype.align = function(neighbors) {
+            var mean = new Vector();
+            var count = 0;
+            for(var boid in neighbors) {
+                var d = this.pos.distance(neighbors[boid].pos);
+                if(d > 0 && d < settings.NEIGHBOR_RADIUS) {
+                    if(Math.abs(this.pos.z - neighbors[boid].pos.z) < 20) {
+                        mean.add(neighbors[boid].vel);
+                        count++;
+                    }
+                }
+            }
+            if(count > 0) mean.divide(count);
+            mean.limit(settings.MAX_FORCE);
+            return mean;
+        };
+
+        Point.prototype.separate = function(neighbors) {
+            var mean = new Vector();
+            var count = 0;
+            for(var boid in neighbors) {
+                var d = this.pos.distance(neighbors[boid].pos);
+                if(d > 0 && d < settings.DESIRED_SEPARATION) {
+                    if(Math.abs(this.pos.z - neighbors[boid].pos.z) < 20) {
+                        mean.add(Vector.subtract(this.pos, neighbors[boid].pos).normalize().divide(d));
+                        count++;
+                    }
+                }
+            }
+            if(count > 0) mean.divide(count);
+            return mean;
+        };
+
+        Point.prototype.influence = function() {
+            var g = new Vector();
+            return g;
+        };
+
+        // 粒子绘制 - 3D到2D投影转换
+        Point.prototype.draw = function() {
+            var x3d = this.pos.x;
+            var y3d = this.pos.y; 
+            var z3d = this.pos.z; 
+            var scale = settings.FOV/(settings.FOV+z3d); 
+            var x2d = (x3d * scale) + this.ctx.canvas.width/2; 
+            var y2d = (y3d * scale) + this.ctx.canvas.height/2;
+
+            // 深度裁剪
+            if(this.pos.z > 25) return;
+
+            // 绘制粒子
+            this.ctx.save();
+            this.ctx.fillStyle = colors[this.type];   
+            this.ctx.beginPath();
+            this.ctx.arc(x2d, y2d, Math.abs(scale*Scales[this.type]), 0, 2*Math.PI, false);
+            this.ctx.closePath();
+            this.ctx.fill();
+            this.ctx.restore();
+        };
+
+        // 向量数学库 - 实现3D向量基本运算
+        Vector = (function() {
+            var _fn, _i, _len, _ref;
+            _ref = ['add', 'subtract', 'multiply', 'divide'];
+            _fn = function(name) {
+                return Vector[name] = function(a, b) {
+                    return a.copy()[name](b);
+                };
+            };
+            for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+                var name = _ref[_i];
+                _fn(name);
+            }
+
+            function Vector(x, y, z) {
+                if (x == null) x = 0;
+                if (y == null) y = 0;
+                if (z == null) z = 0;
+                this.x = x;
+                this.y = y;
+                this.z = z;
+            }
+
+            Vector.prototype.copy = function() {
+                return new Vector(this.x, this.y, this.z);
+            };
+
+            Vector.prototype.magnitude = function() {
+                return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+            };
+
+            Vector.prototype.normalize = function() {
+                var m = this.magnitude();
+                if (m > 0) this.divide(m);
+                return this;
+            };
+
+            Vector.prototype.limit = function(max) {
+                if (this.magnitude() > max) {
+                    this.normalize();
+                    return this.multiply(max);
+                } else {
+                    return this;
+                }
+            };
+
+            Vector.prototype.heading = function() {
+                return -1 * Math.atan2(-1 * this.y, this.x);
+            };
+
+            Vector.prototype.eucl_distance = function(other) {
+                var dx = this.x - other.x;
+                var dy = this.y - other.y;
+                var dz = this.z - other.z;
+                return Math.sqrt(dx * dx + dy * dy + dz * dz);
+            };
+
+            Vector.prototype.distance = function(other, dimensions) {
+                if (dimensions == null) dimensions = false;
+                var dx = Math.abs(this.x - other.x);
+                var dy = Math.abs(this.y - other.y);
+                var dz = Math.abs(this.z - other.z);
+                if (dimensions) {
+                    dx = dx < dimensions.width / 2 ? dx : dimensions.width - dx;
+                    dy = dy < dimensions.height / 2 ? dy : dimensions.height - dy;
+                }
+                return Math.sqrt(dx * dx + dy * dy + dz * dz);
+            };
+
+            Vector.prototype.subtract = function(other) {
+                this.x -= other.x;
+                this.y -= other.y;
+                this.z -= other.z;
+                return this;
+            };
+
+            Vector.prototype.add = function(other) {
+                this.x += other.x;
+                this.y += other.y;
+                this.z += other.z;
+                return this;
+            };
+
+            Vector.prototype.divide = function(n) {
+                this.x /= n;
+                this.y /= n;
+                this.z /= n;
+                return this;
+            };
+
+            Vector.prototype.multiply = function(n) {
+                this.x *= n;
+                this.y *= n;
+                this.z *= n;
+                return this;
+            };
+
+            Vector.prototype.dot = function(other) {
+                return this.x * other.x + this.y * other.y + this.z * other.z;
+            };
+
+            Vector.prototype.projectOnto = function(other) {
+                return other.copy().multiply(this.dot(other));
+            };
+
+            Vector.prototype.wrapRelativeTo = function(location, dimensions) {
+                var v = this.copy();
+                var map = {x: "width", y: "height"};
+                for (var a in map) {
+                    var key = map[a];
+                    var d = this[a] - location[a];
+                    var map_d = dimensions[key];
+                    if (Math.abs(d) > map_d / 2) {
+                        if (d > 0) {
+                            v[a] = (map_d - this[a]) * -1;
+                        } else {
+                            v[a] = this[a] + map_d;
+                        }
+                    }
+                }
+                return v;
+            };
+
+            Vector.prototype.invalid = function() {
+                return (this.x === Infinity) || isNaN(this.x) || this.y === Infinity || isNaN(this.y) || this.z === Infinity || isNaN(this.z);
+            };
+
+            return Vector;
+        })();
+
+        // 初始化函数
+        function initialize() {
+            scene = new Scene("c");
+            scene.enable();
+        }
+
+        // Z轴排序函数
+        function zSort(a, b) {
+            return b.pos.z - a.pos.z;
+        }
+
+        // 页面加载完成后初始化
+        window.onload = function() {
+            initialize();
+        };
+    </script>
+</body>
+</html>    
