@@ -1,2 +1,3 @@
-# cosmic_planet_html
-A cosmic planet style page
+# 3D particle planet simulation dynamic web page
+Location:index.html
+demo:[here](https://go.xtawa.top)
